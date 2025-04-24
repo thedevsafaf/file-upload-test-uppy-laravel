@@ -4,6 +4,12 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 
+//for RESUMABLE JS
+
+use Pion\Laravel\ChunkUpload\Handler\HandlerFactory;
+use Pion\Laravel\ChunkUpload\Receiver\FileReceiver;
+use Illuminate\Support\Facades\Storage;
+
 use App\Models\DailyReport;
 
 class DailyReportController extends Controller
@@ -18,13 +24,14 @@ class DailyReportController extends Controller
     {
         $request->validate([
             'report_date' => 'required|date',
-            'report_images.*' => 'nullable|file|mimes:jpg,jpeg,png|max:20480', //100 MB
+            'report_images.*' => 'nullable|file|mimes:jpg,jpeg,png|max:204800', //100 MB
             'report_docs.*' => 'nullable|file|mimes:pdf,doc,docx,txt|max:204800', //100 MB
         ]);
         
         $images = [];
         $docs = [];
 
+        // standard image uploads
         if ($request->hasFile('report_images')) {
             foreach ($request->file('report_images') as $image) {
                 $path = $image->store('daily_reports/images', 'public');
@@ -32,10 +39,27 @@ class DailyReportController extends Controller
             }
         }
 
+        // standard doc uploads
         if ($request->hasFile('report_docs')) {
             foreach ($request->file('report_docs') as $doc) {
                 $path = $doc->store('daily_reports/docs', 'public');
                 $docs[] = $path;
+            }
+        }
+
+        // Uploaded image paths from frontend (Resumable)
+        if ($request->filled('uploaded_images')) {
+            $json = json_decode($request->uploaded_images, true);
+            if (is_array($json)) {
+                $images = array_merge($images, $json);
+            }
+        }
+
+        // Uploaded doc paths from frontend (Resumable)
+        if ($request->filled('uploaded_docs')) {
+            $json = json_decode($request->uploaded_docs, true);
+            if (is_array($json)) {
+                $docs = array_merge($docs, $json);
             }
         }
 
@@ -51,7 +75,7 @@ class DailyReportController extends Controller
     public function index()
     {
         $reports = DailyReport::latest()->get();
-        return view('daily_reports.index', compact('reports'));
+        return view('index', compact('reports'));
     }
 
     public function uppyCreate()
@@ -66,7 +90,7 @@ class DailyReportController extends Controller
         ]);
 
         $file = $request->file('file');
-        $path = $file->store('daily_reports/uploads', 'public');
+        $path = $file->store('daily_reports/uppy-uploads', 'public');
 
         return response()->json([
             'success' => true,
@@ -95,6 +119,40 @@ class DailyReportController extends Controller
         ]);
 
         return response()->json(['message' => 'Daily Report with Uppy uploaded!']);
+    }
+
+    public function resumableCreate()
+    {
+        return view('daily_reports_resumable.create');
+    }
+
+    public function resumableUpload(Request $request)
+    {
+        $receiver = new FileReceiver('file', $request, HandlerFactory::classFromRequest($request));
+
+        if ($receiver->isUploaded() === false) {
+            return response()->json(['message' => 'File not uploaded'], 400);
+        }
+
+        $save = $receiver->receive(); // receive chunk
+
+        if ($save->isFinished()) {
+
+            $file = $save->getFile();
+            // Save directly to final folder
+            $path = $file->store('daily_reports/resumable', 'public');
+
+            return response()->json([
+                'path' => $path,
+                'name' => $file->getClientOriginalName()
+            ]);
+        }
+
+        $handler = $save->handler();
+
+        return response()->json([
+            "done" => $handler->getPercentageDone(),
+        ]);
     }
 
 }
